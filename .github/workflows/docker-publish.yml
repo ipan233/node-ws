@@ -1,47 +1,90 @@
 name: Docker
 
+# 此工作流程使用未经 GitHub 认证的操作。
+# 这些操作由第三方提供，并受单独的服务条款、隐私政策和支持文档的约束。
+
 on:
+  schedule:
+    - cron: '23 11 * * *'
   push:
     branches: [ "main" ]
+    # 发布符合语义版本标签的版本作为发布。
     tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  # 如果为空，则使用 docker.io 作为 Docker Hub
+  REGISTRY: ghcr.io
+  # github.repository 作为 <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # 用于在非 PR 环境下完成 sigstore/fulcio 的身份验证挑战
+      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install cosign
+      # 安装 cosign 工具，除非是 PR
+      # https://github.com/sigstore/cosign-installer
+      - name: 安装 cosign
+        if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@6e04d228eb30da1757ee4e1dd75a0ec73a653e06 #v3.1.1
         with:
           cosign-release: 'v2.1.1'
 
-      - name: Set up Docker Buildx
+      # 设置 BuildKit Docker 容器构建器，以便能够构建多平台镜像并导出缓存
+      # https://github.com/docker/setup-buildx-action
+      - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
 
-      - name: Log into registry ghcr.io
+      # 登录 Docker 注册表，除非是 PR
+      # https://github.com/docker/login-action
+      - name: 登录到注册表 ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
+      # 提取 Docker 的元数据（标签、标签）
+      # https://github.com/docker/metadata-action
+      - name: 提取 Docker 元数据
         id: meta
         uses: docker/metadata-action@96383f45573cb7f253c731d3b3ab81c87ef81934 # v5.0.0
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      - name: Build and push Docker image
+      # 使用 Buildx 构建并推送 Docker 镜像（不在 PR 时推送）
+      # https://github.com/docker/build-push-action
+      - name: 构建并推送 Docker 镜像
         id: build-and-push
         uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
         with:
-          push: true
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.run_number }} # 使用自定义的标签名称
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Sign the published Docker image
+      # 对生成的 Docker 镜像摘要进行签名，除非是 PR
+      # 这将仅在 Docker 仓库是公共的时写入公共 Rekor 透明日志，以避免泄露数据。
+      # 如果要发布私有镜像的透明数据，可以在下面的 cosign 命令中传递 --force。
+      # https://github.com/sigstore/cosign
+      - name: 对发布的 Docker 镜像进行签名
+        if: ${{ github.event_name != 'pull_request' }}
         env:
+          # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        # 此步骤使用身份令牌来为 sigstore 社区的 Fulcio 实例提供临时证书
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
