@@ -1,21 +1,26 @@
 name: Docker
 
+# 此工作流使用由 GitHub 未认证的操作。
+# 它们由第三方提供，并受独立的服务条款、隐私政策和支持文档约束。
+
 on:
+  # 定时任务，在每天 UTC 时间 11:23 触发
   schedule:
     - cron: '23 11 * * *'
+  # 当推送到 main 分支时触发
   push:
     branches: [ "main" ]
-    # 发布语义版本标签为 releases。
+    # 发布 semver 标签作为版本发布。
     tags: [ 'v*.*.*' ]
+  # 当拉取请求到 main 分支时触发
   pull_request:
     branches: [ "main" ]
 
 env:
-  # 如果为空，则使用 docker.io 作为 Docker Hub
+  # 如果为空，使用 docker.io 作为 Docker Hub
   REGISTRY: ghcr.io
   # github.repository 作为 <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
-
 
 jobs:
   build:
@@ -24,15 +29,15 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # 用于完成身份验证挑战的权限
-      # 与 sigstore/fulcio 配合使用时，在 PR 之外运行。
+      # 用于完成与 sigstore/fulcio 的身份验证挑战
+      # 在不是拉取请求时运行。
       id-token: write
 
     steps:
       - name: 检出仓库
         uses: actions/checkout@v3
 
-      # 安装 cosign 工具，除非是 PR
+      # 安装 cosign 工具，除非是拉取请求
       # https://github.com/sigstore/cosign-installer
       - name: 安装 cosign
         if: github.event_name != 'pull_request'
@@ -46,7 +51,7 @@ jobs:
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
 
-      # 登录到 Docker 注册表，除非是 PR
+      # 登录到 Docker 注册表，除非是拉取请求
       # https://github.com/docker/login-action
       - name: 登录到注册表 ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
@@ -56,7 +61,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 提取 Docker 的元数据（标签，标签）
+      # 提取 Docker 的元数据（标签、标签）
       # https://github.com/docker/metadata-action
       - name: 提取 Docker 元数据
         id: meta
@@ -64,7 +69,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      # 使用 Buildx 构建和推送 Docker 镜像（在 PR 上不推送）
+      # 将镜像标签固定为 main 分支，并构建和推送 Docker 镜像（拉取请求时不推送）
       # https://github.com/docker/build-push-action
       - name: 构建和推送 Docker 镜像
         id: build-and-push
@@ -72,21 +77,20 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags | replaceAll('sha256:', '') }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 对生成的 Docker 镜像摘要进行签名，除非是 PR。
-      # 仅当 Docker 存储库为 public 时，才将数据写入公共 Rekor 透明日志，以避免泄露数据。
-      # 如果要为私有镜像发布透明数据，传递 --force 到下面的 cosign。
+      # 对生成的 Docker 镜像进行签名，除非是拉取请求。
+      # 仅在 Docker 存储库是公共的情况下，才会将数据写入公共 Rekor 透明日志，以避免泄露数据。
+      # 如果希望即使对于私有镜像也发布透明数据，请在下面的 cosign 命令中传递 --force。
       # https://github.com/sigstore/cosign
       - name: 对发布的 Docker 镜像进行签名
         if: ${{ github.event_name != 'pull_request' }}
         env:
           # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
-          TAGS: ${{ steps.meta.outputs.tags }}
+          TAGS: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        # 此步骤使用身份令牌在 sigstore 社区的 Fulcio 实例上生成短暂证书。
-        run:  echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
-
+        # 此步骤使用身份令牌向 sigstore 社
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
