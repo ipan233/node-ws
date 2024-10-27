@@ -37,18 +37,13 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 清除 TUF 缓存
-        run: |
-          rm -rf ~/.sigstore
-          mkdir -p ~/.sigstore
-
       # 安装 cosign 工具，除非是拉取请求
       # https://github.com/sigstore/cosign-installer
+
       - name: 安装 cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3.1.1
+        uses: sigstore/cosign-installer@v3.3.0
         with:
-          cosign-release: 'v2.1.1'
+          cosign-release: 'v2.2.2'
 
       # 设置 BuildKit Docker 容器构建器，以便能够构建
       # 多平台镜像并导出缓存
@@ -91,6 +86,12 @@ jobs:
       # 仅在 Docker 存储库是公共的情况下，才会将数据写入公共 Rekor 透明日志，以避免泄露数据。
       # 如果希望即使对于私有镜像也发布透明数据，请在下面的 cosign 命令中传递 --force。
       # https://github.com/sigstore/cosign
+      
+      - name: 清除 TUF 缓存
+        run: |
+          rm -rf ~/.sigstore
+          mkdir -p ~/.sigstore
+
       - name: 对发布的 Docker 镜像进行签名
         if: ${{ github.event_name != 'pull_request' }}
         env:
